@@ -10,30 +10,32 @@ which stands for the owner's handwritten sign. The same inputs always produce th
 ### Library
 
 ```rust
-use picturesque_tags::{generate_icon, generate_ptag};
+use picturesque_tags::{ForegroundStyle, generate_icon, generate_ptag};
 
 // Background only
 let svg = generate_ptag("apple", 100, 100);
 
-// Background plus a foreground curve generated from the signature
-let svg = generate_icon("apple", "Hidekazu", 128, 128);
+// Background plus a foreground curve generated from the signature.
+// ForegroundStyle::Crossing draws a curve that crosses itself exactly once, like a loop in a sign.
+// ForegroundStyle::NoCrossing draws a curve that never crosses itself.
+let svg = generate_icon("apple", "Hidekazu", ForegroundStyle::Crossing, 128, 128);
 
 // Multiple tags: sorted, then up to four are composed in a 2x2 grid.
 // The signature curve is drawn once over the whole icon.
 use picturesque_tags::generate_icon_from_tags;
-let svg = generate_icon_from_tags(&["cardbox", "card"], "Hidekazu", 128, 128);
+let svg = generate_icon_from_tags(&["cardbox", "card"], "Hidekazu", ForegroundStyle::NoCrossing, 128, 128);
 ```
 
 Use `IconBuilder` directly for finer control.
 
 ```rust
-use picturesque_tags::{Color, HatchPatternType, IconBuilder};
+use picturesque_tags::{Color, ForegroundStyle, HatchPatternType, IconBuilder};
 
 let mut builder = IconBuilder::new(100, 100);
 builder
     .generate_bg_from_text("apple")
     .add_circle(HatchPatternType::Dots, Color::rgb(0x9B, 0xA9, 0xEB), 20.0, 0.0, 0.0)
-    .add_foreground("Hidekazu");
+    .add_foreground("Hidekazu", ForegroundStyle::Crossing);
 let svg = builder.to_svg();
 ```
 
@@ -42,6 +44,7 @@ let svg = builder.to_svg();
 ```sh
 cargo run -- --size 128 apple > apple.svg
 cargo run -- --size 128x96 --signature Hidekazu apple > apple.svg
+cargo run -- --size 128 --signature Hidekazu --style no-crossing apple > apple.svg
 # Multiple tags are sorted and up to four are composed in a 2x2 grid
 cargo run -- --size 128 --signature Hidekazu cardbox card > cardbox_card.svg
 ```

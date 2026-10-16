@@ -2,7 +2,9 @@
 //!
 //! Run: `cargo run --example gallery > gallery.html`
 
-use picturesque_tags::{generate_icon, generate_icon_from_tags, generate_ptag, generate_ptag_from_tags};
+use picturesque_tags::{
+    ForegroundStyle, generate_icon, generate_icon_from_tags, generate_ptag, generate_ptag_from_tags,
+};
 
 const TAGS: &[&str] = &[
     "apple", "banana", "cherry", "date", "elderberry", "fig", "grape", "honeydew", "kiwi", "lemon",
@@ -23,13 +25,15 @@ const TAG_SETS: &[&[&str]] = &[
     &[],
 ];
 
-// A few examples with a signature curve. Each pair is (signature, tags).
-const SIGNED: &[(&str, &[&str])] = &[
-    ("Alice", &["apple"]),
-    ("Bob", &["apple"]),
-    ("Alice", &["cardbox", "card"]),
-    ("Bob", &["cardbox", "card", "framework"]),
-    ("Alice", &[]),
+// A few examples with a signature curve. Each entry is (signature, style, tags).
+const SIGNED: &[(&str, ForegroundStyle, &[&str])] = &[
+    ("Alice", ForegroundStyle::Crossing, &["apple"]),
+    ("Alice", ForegroundStyle::NoCrossing, &["apple"]),
+    ("Bob", ForegroundStyle::Crossing, &["apple"]),
+    ("Bob", ForegroundStyle::NoCrossing, &["apple"]),
+    ("Alice", ForegroundStyle::Crossing, &["cardbox", "card"]),
+    ("Bob", ForegroundStyle::NoCrossing, &["cardbox", "card", "framework"]),
+    ("Alice", ForegroundStyle::Crossing, &[]),
 ];
 
 fn figure(svg: &str, caption: &str) {
@@ -68,12 +72,12 @@ fn main() {
 
     println!("<h2>With signature</h2>");
     println!("<div style=\"display:flex;flex-wrap:wrap;\">");
-    for (signature, tags) in SIGNED {
+    for (signature, style, tags) in SIGNED {
         let svg = match tags {
-            [tag] => generate_icon(tag, signature, size, size),
-            _ => generate_icon_from_tags(tags, signature, size, size),
+            [tag] => generate_icon(tag, signature, *style, size, size),
+            _ => generate_icon_from_tags(tags, signature, *style, size, size),
         };
-        figure(&svg, &format!("{} / sign: {signature}", tags_caption(tags)));
+        figure(&svg, &format!("{} / sign: {signature} / {style:?}", tags_caption(tags)));
     }
     println!("</div></body></html>");
 }
