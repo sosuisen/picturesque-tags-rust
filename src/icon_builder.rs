@@ -1,0 +1,395 @@
+//! Builder that assembles an SVG icon from a tag string.
+
+use std::f64::consts::PI;
+
+use rand::RngExt;
+use sha1::{Digest, Sha1};
+
+use crate::area::AreaName;
+use crate::colors::{Color, ColorName};
+use crate::geometry::{Geometry, GeometryType, ShapeType};
+use crate::hatch_pattern::HatchPatternType;
+
+/// SVG icon builder.
+///
+/// The background shapes are chosen deterministically by `generate_bg_from_text`.
+/// The foreground curve is chosen randomly by `add_foreground`.
+#[derive(Debug, Clone)]
+pub struct IconBuilder {
+    width: i32,
+    height: i32,
+    pattern_defs: Vec<String>,
+    bg_group: Vec<String>,
+    fg_group: Vec<String>,
+}
+
+impl IconBuilder {
+    pub fn new(width: i32, height: i32) -> Self {
+        Self {
+            width,
+            height,
+            pattern_defs: Vec::new(),
+            bg_group: Vec::new(),
+            fg_group: Vec::new(),
+        }
+    }
+
+    pub fn width(&self) -> i32 {
+        self.width
+    }
+
+    pub fn height(&self) -> i32 {
+        self.height
+    }
+
+    /// Returns whether the character is an ideogram (kanji).
+    ///
+    /// Hiragana and katakana are phonetic, so they return `false`.
+    /// Katakana often carries meaning in fewer characters than the original
+    /// English word, so returning `true` for it might be reasonable,
+    /// but the original implementation returns `false`, and so does this one.
+    fn is_ideogram(c: char) -> bool {
+        const KANJI_RANGES: [(u32, u32); 3] = [(0x4E00, 0x9FFF), (0x3400, 0x4DBF), (0xF900, 0xFAFF)];
+        let code = c as u32;
+        KANJI_RANGES
+            .iter()
+            .any(|&(start, end)| (start..=end).contains(&code))
+    }
+
+    /// Reads the tag from the start and cuts a block each time the character
+    /// weight reaches 3 or more.
+    ///
+    /// Ideograms weigh 2, every other character weighs 1.
+    /// The fourth block takes all remaining characters.
+    fn split_blocks(tag: &str) -> [String; 4] {
+        let chars: Vec<char> = tag.chars().collect();
+        let mut blocks: [String; 4] = Default::default();
+        let mut filled = 0;
+        let mut char_count = 0;
+        let mut tmp = String::new();
+
+        for (i, &c) in chars.iter().enumerate() {
+            char_count += if Self::is_ideogram(c) { 2 } else { 1 };
+            tmp.push(c);
+            let is_last = i == chars.len() - 1;
+
+            // The last block is not cut by weight. It takes everything left.
+            let should_close = if filled < 3 {
+                char_count >= 3 || is_last
+            } else if filled == 3 {
+                is_last
+            } else {
+                false
+            };
+            if should_close {
+                blocks[filled] = std::mem::take(&mut tmp);
+                filled += 1;
+                char_count = 0;
+            }
+        }
+        blocks
+    }
+
+    /// Returns the first 4 bytes of the SHA-1 hash of the string as a little-endian u32.
+    ///
+    /// .NET's `GetHashCode` is not stable across environments, so it is not used.
+    fn hash_u32(s: &str) -> u32 {
+        let digest = Sha1::digest(s.as_bytes());
+        u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]])
+    }
+
+    /// Adds background shapes chosen deterministically from the tag string.
+    ///
+    /// An empty tag produces the default icon (with a foreground curve).
+    pub fn generate_bg_from_text(&mut self, tag: &str) -> &mut Self {
+        if tag.is_empty() {
+            return self.default_icon();
+        }
+
+        let [block1, block2, block3, block4] = Self::split_blocks(tag);
+        let hash1 = Self::hash_u32(&block1);
+        let hash2 = Self::hash_u32(&block2);
+        let hash3 = Self::hash_u32(&block3);
+        let hash4 = Self::hash_u32(&block4);
+
+        // Reduce hash1 modulo (ColorName x ShapeType x GeometryType), then split
+        // it into quotients and remainders to get each index.
+        let index1 = hash1 % (ColorName::COUNT * ShapeType::COUNT * GeometryType::COUNT);
+        let main_color_index = index1 / (ShapeType::COUNT * GeometryType::COUNT);
+        let remainder = index1 % (ShapeType::COUNT * GeometryType::COUNT);
+        let main_shape_index = remainder / GeometryType::COUNT;
+        let main_geometry_index = remainder % GeometryType::COUNT;
+
+        let main_color = ColorName::from_index(main_color_index).color();
+        let main_geom = Geometry::lookup(AreaName::BgMain, GeometryType::from_index(main_geometry_index));
+
+        let main_hatch = if block2.is_empty() {
+            HatchPatternType::Fill
+        } else {
+            HatchPatternType::from_index(hash2)
+        };
+
+        let width = self.width as f32;
+
+        if !block3.is_empty() {
+            let index3 = hash3 % (ColorName::COUNT * GeometryType::COUNT);
+            let color_index = index3 / GeometryType::COUNT;
+            let geometry_index = index3 % GeometryType::COUNT;
+            let color = ColorName::from_index(color_index).color().change_brightness(0.9);
+            let geom = Geometry::lookup(AreaName::BgSub1, GeometryType::from_index(geometry_index));
+            self.add_circle(
+                HatchPatternType::Fill,
+                color,
+                geom.radius * width,
+                geom.center_x * width,
+                geom.center_y * width,
+            );
+        }
+
+        if !block4.is_empty() {
+            let index4 = hash4 % (ColorName::COUNT * GeometryType::COUNT);
+            let color_index = index4 / GeometryType::COUNT;
+            let geometry_index = index4 % GeometryType::COUNT;
+            let color = ColorName::from_index(color_index).color().change_brightness(1.1);
+            let geom = Geometry::lookup(AreaName::BgSub2, GeometryType::from_index(geometry_index));
+            self.add_circle(
+                HatchPatternType::Fill,
+                color,
+                geom.radius * width,
+                geom.center_x * width,
+                geom.center_y * width,
+            );
+        }
+
+        let radius = main_geom.radius * width;
+        let cx = main_geom.center_x * width;
+        let cy = main_geom.center_y * width;
+        match ShapeType::from_index(main_shape_index) {
+            ShapeType::Circle => self.add_circle(main_hatch, main_color, radius, cx, cy),
+            ShapeType::Diamond => self.add_diamond(main_hatch, main_color, radius, cx, cy),
+            ShapeType::Pentagon => self.add_pentagon(main_hatch, main_color, radius, cx, cy),
+        };
+
+        self
+    }
+
+    /// Registers the pattern and returns the value for the shape's `fill` attribute.
+    fn register_fill(&mut self, hatch: HatchPatternType, color: Color) -> String {
+        let id = format!("pat{}", self.pattern_defs.len());
+        match hatch.to_svg_pattern(&id, color) {
+            Some(pattern) => {
+                self.pattern_defs.push(pattern);
+                format!("url(#{id})")
+            }
+            None => color.to_hex(),
+        }
+    }
+
+    pub fn add_circle(
+        &mut self,
+        hatch: HatchPatternType,
+        color: Color,
+        radius: f32,
+        center_x: f32,
+        center_y: f32,
+    ) -> &mut Self {
+        let fill = self.register_fill(hatch, color);
+        self.bg_group.push(format!(
+            r#"<circle cx="{center_x}" cy="{center_y}" r="{radius}" fill="{fill}"/>"#
+        ));
+        self
+    }
+
+    pub fn add_diamond(
+        &mut self,
+        hatch: HatchPatternType,
+        color: Color,
+        radius: f32,
+        center_x: f32,
+        center_y: f32,
+    ) -> &mut Self {
+        let points = [
+            (center_x + radius, center_y),
+            (center_x, center_y + radius),
+            (center_x - radius, center_y),
+            (center_x, center_y - radius),
+        ];
+        self.add_polygon(hatch, color, &points)
+    }
+
+    pub fn add_pentagon(
+        &mut self,
+        hatch: HatchPatternType,
+        color: Color,
+        radius: f32,
+        center_x: f32,
+        center_y: f32,
+    ) -> &mut Self {
+        let points: Vec<(f32, f32)> = (0..5)
+            .map(|k| {
+                let angle = 2.0 * k as f64 * PI / 5.0;
+                (
+                    center_x + (radius as f64 * angle.cos()) as f32,
+                    center_y + (radius as f64 * angle.sin()) as f32,
+                )
+            })
+            .collect();
+        self.add_polygon(hatch, color, &points)
+    }
+
+    fn add_polygon(&mut self, hatch: HatchPatternType, color: Color, points: &[(f32, f32)]) -> &mut Self {
+        let fill = self.register_fill(hatch, color);
+        let points: Vec<String> = points.iter().map(|(x, y)| format!("{x},{y}")).collect();
+        self.bg_group.push(format!(
+            r#"<polygon points="{}" fill="{fill}"/>"#,
+            points.join(" ")
+        ));
+        self
+    }
+
+    /// Adds a hand-drawn style closed curve to the foreground. Its shape is random.
+    ///
+    /// A circle is approximated with four cubic Bezier curves, then the centers
+    /// and handle lengths are jittered to distort it.
+    /// The base handle length 0.552284749831 is the constant that approximates a circle exactly.
+    pub fn add_foreground(&mut self) -> &mut Self {
+        let mut rng = rand::rng();
+        let half = self.width / 2;
+        // The original computes the radius with integer arithmetic. Keep the same order of operations.
+        let r_int = half * rng.random_range(70..90) / 100;
+        let r = r_int as f32;
+
+        // Jitter of the center points. Use 0 when the range would be empty.
+        let jitter_max = half - r_int;
+        let mut jitter = || -> f32 {
+            if jitter_max > 0 {
+                rng.random_range(0..jitter_max) as f32
+            } else {
+                0.0
+            }
+        };
+        let (cx1, cy1) = (jitter(), jitter());
+        let (cx2, cy2) = (jitter(), jitter());
+        let (cx3, cy3) = (jitter(), jitter());
+        let (cx4, cy4) = (jitter(), jitter());
+
+        let base_handle_length = 0.552_284_8_f32 * r;
+        let mut handle = || base_handle_length * rng.random_range(70..90) as f32 / 100.0;
+        let c1 = handle();
+        let c2 = handle();
+        let c3 = handle();
+        let c4 = handle();
+        let c5 = handle();
+        let c6 = handle();
+        let c7 = handle();
+
+        let d = format!(
+            "M {} {} C {} {} {} {} {} {} C {} {} {} {} {} {} C {} {} {} {} {} {} C {} {} {} {} {} {} Z",
+            cx1, cy1 - r,
+            cx1 + c1, cy1 - r, cx2 + r, cy2 - c2, cx2 + r, cy2,
+            cx2 + r, cy2 + c3, cx3 + c4, cy3 + r, cx3, cy3 + r,
+            cx3 - c5, cy3 + r, cx4 - r, cy4 + c6, cx4 - r, cy4,
+            cx4 - r, cy4 - c7, cx1 - c1, cy1 - r, cx1, cy1 - r,
+        );
+        self.fg_group.push(format!(
+            r##"<path d="{d}" stroke="#000000" stroke-width="5" fill="none"/>"##
+        ));
+        self
+    }
+
+    /// Adds the default icon: a gray circle and a foreground curve.
+    pub fn default_icon(&mut self) -> &mut Self {
+        let half = (self.width / 2) as f32;
+        self.add_circle(HatchPatternType::Fill, Color::rgb(128, 128, 128), half, half, half);
+        self.add_foreground()
+    }
+
+    /// Returns the SVG string. No XML declaration.
+    pub fn to_svg(&self) -> String {
+        let defs = if self.pattern_defs.is_empty() {
+            String::new()
+        } else {
+            format!("<defs>{}</defs>", self.pattern_defs.concat())
+        };
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="{vx} {vy} {w} {h}">{defs}<g>{bg}</g><g>{fg}</g></svg>"#,
+            w = self.width,
+            h = self.height,
+            vx = -self.width / 2,
+            vy = -self.height / 2,
+            bg = self.bg_group.concat(),
+            fg = self.fg_group.concat(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_blocks_counts_ascii_as_one() {
+        let blocks = IconBuilder::split_blocks("apple");
+        assert_eq!(blocks, ["app", "le", "", ""].map(String::from));
+    }
+
+    #[test]
+    fn split_blocks_counts_kanji_as_two() {
+        let blocks = IconBuilder::split_blocks("日本語");
+        assert_eq!(blocks, ["日本", "語", "", ""].map(String::from));
+    }
+
+    #[test]
+    fn split_blocks_puts_rest_in_last_block() {
+        let blocks = IconBuilder::split_blocks("abcdefghijklmnop");
+        assert_eq!(blocks, ["abc", "def", "ghi", "jklmnop"].map(String::from));
+    }
+
+    #[test]
+    fn hiragana_is_not_ideogram() {
+        assert!(!IconBuilder::is_ideogram('あ'));
+        assert!(!IconBuilder::is_ideogram('ア'));
+        assert!(IconBuilder::is_ideogram('漢'));
+        assert!(!IconBuilder::is_ideogram('a'));
+    }
+
+    #[test]
+    fn hash_u32_reads_little_endian_prefix() {
+        // SHA-1("") = da39a3ee...
+        assert_eq!(IconBuilder::hash_u32(""), 0xEEA3_39DA);
+    }
+
+    #[test]
+    fn same_tag_gives_same_svg() {
+        let a = crate::generate_ptag("apple", 100, 100);
+        let b = crate::generate_ptag("apple", 100, 100);
+        assert_eq!(a, b);
+        assert!(a.starts_with(r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="-50 -50 100 100">"#));
+    }
+
+    #[test]
+    fn long_tag_adds_sub_circles_and_pattern() {
+        let mut builder = IconBuilder::new(100, 100);
+        builder.generate_bg_from_text("abcdefghijkl");
+        // Two sub circles plus the main shape make three background elements.
+        assert_eq!(builder.bg_group.len(), 3);
+        let svg = builder.to_svg();
+        // Block 2 exists, so a hatch pattern may be used. If it is not Fill, defs must appear.
+        let uses_pattern = svg.contains("url(#pat");
+        assert_eq!(uses_pattern, svg.contains("<defs>"));
+    }
+
+    #[test]
+    fn empty_tag_gives_default_icon() {
+        let svg = crate::generate_ptag("", 100, 100);
+        assert!(svg.contains(r##"<circle cx="50" cy="50" r="50" fill="#808080"/>"##));
+        assert!(svg.contains("<path d=\"M "));
+    }
+
+    #[test]
+    fn foreground_adds_a_path_even_for_tiny_icons() {
+        let mut builder = IconBuilder::new(2, 2);
+        builder.add_foreground();
+        assert_eq!(builder.fg_group.len(), 1);
+    }
+}
