@@ -2,9 +2,12 @@
 name = "picturesque-tags"
 version = "0.1.0"
 edition = "2024"
-description = "Generate SVG icons from tag strings. Rust port of sosuisen/picturesque-tags."
+description = "Generate SVG icons from tag strings."
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/sosuisen/picturesque-tags-rust"
+keywords = ["svg", "icon", "identicon", "tag"]
+categories = ["multimedia::images"]
 exclude = ["gallery.html"]
 
 [dependencies]
