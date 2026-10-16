@@ -2,7 +2,8 @@
 
 use std::f64::consts::PI;
 
-use rand::RngExt;
+use rand::{RngExt, SeedableRng};
+use rand_pcg::Pcg32;
 use sha1::{Digest, Sha1};
 
 use crate::area::AreaName;
@@ -12,8 +13,8 @@ use crate::hatch_pattern::HatchPatternType;
 
 /// SVG icon builder.
 ///
-/// The background shapes are chosen deterministically by `generate_bg_from_text`.
-/// The foreground curve is chosen randomly by `add_foreground`.
+/// The background shapes are chosen deterministically from the tag by `generate_bg_from_text`.
+/// The foreground curve is chosen deterministically from the signature by `add_foreground`.
 #[derive(Debug, Clone)]
 pub struct IconBuilder {
     width: i32,
@@ -98,12 +99,21 @@ impl IconBuilder {
         u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]])
     }
 
+    /// Returns the first 8 bytes of the SHA-1 hash of the string as a little-endian u64.
+    /// Used as the seed of the foreground random number generator.
+    fn hash_u64(s: &str) -> u64 {
+        let digest = Sha1::digest(s.as_bytes());
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&digest[..8]);
+        u64::from_le_bytes(bytes)
+    }
+
     /// Adds background shapes chosen deterministically from the tag string.
     ///
-    /// An empty tag produces the default icon (with a foreground curve).
+    /// An empty tag produces the default background (a gray circle).
     pub fn generate_bg_from_text(&mut self, tag: &str) -> &mut Self {
         if tag.is_empty() {
-            return self.default_icon();
+            return self.default_background();
         }
 
         let [block1, block2, block3, block4] = Self::split_blocks(tag);
@@ -247,13 +257,18 @@ impl IconBuilder {
         self
     }
 
-    /// Adds a hand-drawn style closed curve to the foreground. Its shape is random.
+    /// Adds a hand-drawn style closed curve to the foreground.
+    ///
+    /// The curve is chosen deterministically from `signature`, which stands for
+    /// the owner's handwritten sign. The same signature always gives the same curve.
     ///
     /// A circle is approximated with four cubic Bezier curves, then the centers
     /// and handle lengths are jittered to distort it.
     /// The base handle length 0.552284749831 is the constant that approximates a circle exactly.
-    pub fn add_foreground(&mut self) -> &mut Self {
-        let mut rng = rand::rng();
+    pub fn add_foreground(&mut self, signature: &str) -> &mut Self {
+        // PCG32 is used instead of rand's default generators because its algorithm
+        // is fixed, so the same signature keeps giving the same curve across versions.
+        let mut rng = Pcg32::seed_from_u64(Self::hash_u64(signature));
         let half = self.width / 2;
         // The original computes the radius with integer arithmetic. Keep the same order of operations.
         let r_int = half * rng.random_range(70..90) / 100;
@@ -297,11 +312,15 @@ impl IconBuilder {
         self
     }
 
-    /// Adds the default icon: a gray circle and a foreground curve.
-    pub fn default_icon(&mut self) -> &mut Self {
+    /// Adds the default background: a gray circle.
+    pub fn default_background(&mut self) -> &mut Self {
         let half = (self.width / 2) as f32;
-        self.add_circle(HatchPatternType::Fill, Color::rgb(128, 128, 128), half, half, half);
-        self.add_foreground()
+        self.add_circle(HatchPatternType::Fill, Color::rgb(128, 128, 128), half, half, half)
+    }
+
+    /// Adds the default icon: a gray circle and a foreground curve from the signature.
+    pub fn default_icon(&mut self, signature: &str) -> &mut Self {
+        self.default_background().add_foreground(signature)
     }
 
     /// Returns the SVG string. No XML declaration.
@@ -380,16 +399,49 @@ mod tests {
     }
 
     #[test]
-    fn empty_tag_gives_default_icon() {
+    fn empty_tag_gives_default_background_without_curve() {
         let svg = crate::generate_ptag("", 100, 100);
         assert!(svg.contains(r##"<circle cx="50" cy="50" r="50" fill="#808080"/>"##));
+        assert!(!svg.contains("<path "));
+    }
+
+    #[test]
+    fn default_icon_has_gray_circle_and_curve() {
+        let mut builder = IconBuilder::new(100, 100);
+        builder.default_icon("sign");
+        let svg = builder.to_svg();
+        assert!(svg.contains(r##"fill="#808080""##));
         assert!(svg.contains("<path d=\"M "));
     }
 
     #[test]
     fn foreground_adds_a_path_even_for_tiny_icons() {
         let mut builder = IconBuilder::new(2, 2);
-        builder.add_foreground();
+        builder.add_foreground("sign");
         assert_eq!(builder.fg_group.len(), 1);
+    }
+
+    #[test]
+    fn same_signature_gives_same_curve() {
+        let mut a = IconBuilder::new(100, 100);
+        let mut b = IconBuilder::new(100, 100);
+        a.add_foreground("Hidekazu");
+        b.add_foreground("Hidekazu");
+        assert_eq!(a.fg_group, b.fg_group);
+    }
+
+    #[test]
+    fn different_signatures_give_different_curves() {
+        let mut a = IconBuilder::new(100, 100);
+        let mut b = IconBuilder::new(100, 100);
+        a.add_foreground("alice");
+        b.add_foreground("bob");
+        assert_ne!(a.fg_group, b.fg_group);
+    }
+
+    #[test]
+    fn hash_u64_reads_little_endian_prefix() {
+        // SHA-1("") = da39a3ee5e6b4b0d...
+        assert_eq!(IconBuilder::hash_u64(""), 0x0D4B_6B5E_EEA3_39DA);
     }
 }

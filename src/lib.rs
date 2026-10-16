@@ -1,6 +1,10 @@
 //! Picturesque Tags: generate SVG icons from tag strings deterministically.
 //!
 //! Rust port of <https://github.com/sosuisen/picturesque-tags>.
+//!
+//! The background is generated from the tag. The foreground curve is generated
+//! from a separate string called the signature, which stands for the owner's
+//! handwritten sign. The same inputs always give the same SVG.
 
 pub mod area;
 pub mod colors;
@@ -22,14 +26,15 @@ pub const MAX_COMPOSED_TAGS: usize = 4;
 ///
 /// Equivalent to `Program.GeneratePtag` in the original. No foreground curve.
 pub fn generate_ptag(tag: &str, width: i32, height: i32) -> String {
-    build_icon(tag, width, height, false).to_svg()
+    build_icon(tag, width, height, None).to_svg()
 }
 
-/// Generates an SVG icon with the background and the foreground curve.
+/// Generates an SVG icon with the background from `tag` and the foreground curve from `signature`.
 ///
-/// Equivalent to `Generator.GenerateIcon(int, int, string)` in the original.
-pub fn generate_icon(tag: &str, width: i32, height: i32) -> String {
-    build_icon(tag, width, height, true).to_svg()
+/// Equivalent to `Generator.GenerateIcon(int, int, string)` in the original,
+/// except that the curve is deterministic.
+pub fn generate_icon(tag: &str, signature: &str, width: i32, height: i32) -> String {
+    build_icon(tag, width, height, Some(signature)).to_svg()
 }
 
 /// Generates an SVG icon with the foreground curve from a list of tags.
@@ -38,31 +43,33 @@ pub fn generate_icon(tag: &str, width: i32, height: i32) -> String {
 /// - One tag: returns the icon for that tag.
 /// - Two or more tags: sorts them, takes up to four, and composes them
 ///   into one icon in the order top-left, top-right, bottom-left, bottom-right.
-pub fn generate_icon_from_tags(tags: &[impl AsRef<str>], width: i32, height: i32) -> String {
-    generate_from_tags(tags, width, height, true)
+///   The signature curve is drawn once, large, over the whole composed icon.
+pub fn generate_icon_from_tags(
+    tags: &[impl AsRef<str>],
+    signature: &str,
+    width: i32,
+    height: i32,
+) -> String {
+    generate_from_tags(tags, width, height, Some(signature))
 }
 
 /// Generates an SVG icon with the background only from a list of tags.
 ///
 /// Behaves like `generate_icon_from_tags` with respect to the number of tags.
 pub fn generate_ptag_from_tags(tags: &[impl AsRef<str>], width: i32, height: i32) -> String {
-    generate_from_tags(tags, width, height, false)
+    generate_from_tags(tags, width, height, None)
 }
 
 fn generate_from_tags(
     tags: &[impl AsRef<str>],
     width: i32,
     height: i32,
-    with_foreground: bool,
+    signature: Option<&str>,
 ) -> String {
     match tags {
-        [] => {
-            let mut builder = IconBuilder::new(width, height);
-            builder.default_icon();
-            builder.to_svg()
-        }
-        [tag] => build_icon(tag.as_ref(), width, height, with_foreground).to_svg(),
-        _ => compose_icons(tags, width, height, with_foreground),
+        [] => build_icon("", width, height, signature).to_svg(),
+        [tag] => build_icon(tag.as_ref(), width, height, signature).to_svg(),
+        _ => compose_icons(tags, width, height, signature),
     }
 }
 
@@ -71,18 +78,19 @@ fn generate_from_tags(
 /// Sorts the tags by Unicode code point and lays out up to four of them
 /// as W/2 x H/2 tiles in a 2 x 2 grid.
 /// Each tile is embedded as a nested `<svg>`, so shapes outside a tile are clipped.
+/// The signature curve, if any, is drawn once over the whole icon, not per tile.
 fn compose_icons(
     tags: &[impl AsRef<str>],
     width: i32,
     height: i32,
-    with_foreground: bool,
+    signature: Option<&str>,
 ) -> String {
     let mut sorted: Vec<&str> = tags.iter().map(AsRef::as_ref).collect();
     sorted.sort_unstable();
 
     let tile_width = width / 2;
     let tile_height = height / 2;
-    let tiles: String = sorted
+    let mut layers: Vec<String> = sorted
         .iter()
         .take(MAX_COMPOSED_TAGS)
         .enumerate()
@@ -90,26 +98,37 @@ fn compose_icons(
             // 0: top-left, 1: top-right, 2: bottom-left, 3: bottom-right
             let x = (i % 2) as i32 * tile_width;
             let y = (i / 2) as i32 * tile_height;
-            build_icon(tag, tile_width, tile_height, with_foreground)
-                .to_svg()
-                .replacen("<svg ", &format!(r#"<svg x="{x}" y="{y}" "#), 1)
-                // Duplicate pattern IDs in one document resolve to the first definition,
-                // so prefix the IDs with the tile index.
+            let tile = build_icon(tag, tile_width, tile_height, None).to_svg();
+            // Duplicate pattern IDs in one document resolve to the first definition,
+            // so prefix the IDs with the tile index.
+            nest_svg(&tile, x, y)
                 .replace(r#"id="pat"#, &format!(r#"id="t{i}pat"#))
                 .replace("url(#pat", &format!("url(#t{i}pat"))
         })
         .collect();
 
+    if let Some(signature) = signature {
+        let mut foreground = IconBuilder::new(width, height);
+        foreground.add_foreground(signature);
+        layers.push(nest_svg(&foreground.to_svg(), 0, 0));
+    }
+
     format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">{tiles}</svg>"#
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">{}</svg>"#,
+        layers.concat()
     )
 }
 
-fn build_icon(tag: &str, width: i32, height: i32, with_foreground: bool) -> IconBuilder {
+/// Turns a standalone SVG string into a nested `<svg>` placed at `(x, y)`.
+fn nest_svg(svg: &str, x: i32, y: i32) -> String {
+    svg.replacen("<svg ", &format!(r#"<svg x="{x}" y="{y}" "#), 1)
+}
+
+fn build_icon(tag: &str, width: i32, height: i32, signature: Option<&str>) -> IconBuilder {
     let mut builder = IconBuilder::new(width, height);
     builder.generate_bg_from_text(tag);
-    if with_foreground {
-        builder.add_foreground();
+    if let Some(signature) = signature {
+        builder.add_foreground(signature);
     }
     builder
 }
@@ -117,6 +136,8 @@ fn build_icon(tag: &str, width: i32, height: i32, with_foreground: bool) -> Icon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SIGN: &str = "Hidekazu";
 
     #[test]
     fn single_tag_is_same_as_generate_ptag() {
@@ -126,9 +147,27 @@ mod tests {
     }
 
     #[test]
+    fn generate_icon_is_deterministic() {
+        let a = generate_icon("apple", SIGN, 100, 100);
+        let b = generate_icon("apple", SIGN, 100, 100);
+        assert_eq!(a, b);
+        assert!(a.contains("<path d=\"M "));
+    }
+
+    #[test]
+    fn signature_changes_only_the_curve() {
+        let a = generate_icon("apple", "alice", 100, 100);
+        let b = generate_icon("apple", "bob", 100, 100);
+        let background = |svg: &str| svg.split("<path ").next().unwrap().to_string();
+        assert_eq!(background(&a), background(&b));
+        assert_ne!(a, b);
+    }
+
+    #[test]
     fn no_tags_gives_default_icon() {
-        let svg = generate_ptag_from_tags(&[] as &[&str], 100, 100);
+        let svg = generate_icon_from_tags(&[] as &[&str], SIGN, 100, 100);
         assert!(svg.contains(r##"fill="#808080""##));
+        assert!(svg.contains("<path d=\"M "));
     }
 
     #[test]
@@ -159,6 +198,25 @@ mod tests {
     fn more_than_four_tags_are_truncated() {
         let svg = generate_ptag_from_tags(&["e", "d", "c", "b", "a"], 100, 100);
         assert_eq!(svg.matches("<svg x=").count(), MAX_COMPOSED_TAGS);
+    }
+
+    #[test]
+    fn composed_icon_draws_one_large_curve_on_top() {
+        let svg = generate_icon_from_tags(&["b", "a", "c", "d"], SIGN, 100, 100);
+        // Four tiles plus one full-size foreground layer.
+        assert_eq!(svg.matches("<svg x=").count(), MAX_COMPOSED_TAGS + 1);
+        assert_eq!(svg.matches("<path ").count(), 1);
+        let curve_layer = svg.rfind("<svg x=").unwrap();
+        assert!(svg[curve_layer..].starts_with(
+            r#"<svg x="0" y="0" xmlns="http://www.w3.org/2000/svg" width="100" height="100""#
+        ));
+        assert!(svg[curve_layer..].contains("<path "));
+        // The curve is the same one a single icon of the same size would get.
+        let mut expected = IconBuilder::new(100, 100);
+        expected.add_foreground(SIGN);
+        let expected_path = expected.to_svg();
+        let expected_path = expected_path.split("<path ").nth(1).unwrap();
+        assert!(svg.contains(expected_path));
     }
 
     #[test]

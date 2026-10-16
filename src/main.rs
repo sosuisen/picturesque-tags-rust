@@ -1,6 +1,6 @@
 //! Generates an SVG icon from the command line and writes it to stdout.
 //!
-//! Usage: `picturesque-tags [--size W[xH]] [--foreground] [TAG...]`
+//! Usage: `picturesque-tags [--size W[xH]] [--signature TEXT] [TAG...]`
 
 use std::process::ExitCode;
 
@@ -10,15 +10,22 @@ fn main() -> ExitCode {
     let mut tags: Vec<String> = Vec::new();
     let mut width = 100;
     let mut height = 100;
-    let mut with_foreground = false;
+    let mut signature: Option<String> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--foreground" | "-f" => with_foreground = true,
             "--help" | "-h" => {
                 print_usage();
                 return ExitCode::SUCCESS;
+            }
+            "--signature" | "-g" => {
+                let Some(value) = args.next() else {
+                    eprintln!("--signature requires a value");
+                    print_usage();
+                    return ExitCode::FAILURE;
+                };
+                signature = Some(value);
             }
             "--size" | "-s" => {
                 let Some(value) = args.next() else {
@@ -47,10 +54,9 @@ fn main() -> ExitCode {
         tags.push(String::from("A"));
     }
 
-    let svg = if with_foreground {
-        generate_icon_from_tags(&tags, width, height)
-    } else {
-        generate_ptag_from_tags(&tags, width, height)
+    let svg = match signature {
+        Some(signature) => generate_icon_from_tags(&tags, &signature, width, height),
+        None => generate_ptag_from_tags(&tags, width, height),
     };
     println!("{svg}");
     ExitCode::SUCCESS
@@ -69,9 +75,9 @@ fn parse_size(value: &str) -> Option<(i32, i32)> {
 }
 
 fn print_usage() {
-    eprintln!("usage: picturesque-tags [--size W[xH]] [--foreground] [TAG...]");
-    eprintln!("  TAG               tag string the icon is generated from (default: A)");
-    eprintln!("                    two or more tags are sorted and up to four are composed in a 2x2 grid");
-    eprintln!("  --size, -s W[xH]  icon width and height (default: 100)");
-    eprintln!("  --foreground, -f  add a hand-drawn style foreground curve");
+    eprintln!("usage: picturesque-tags [--size W[xH]] [--signature TEXT] [TAG...]");
+    eprintln!("  TAG                  tag string the background is generated from (default: A)");
+    eprintln!("                       two or more tags are sorted and up to four are composed in a 2x2 grid");
+    eprintln!("  --size, -s W[xH]     icon width and height (default: 100)");
+    eprintln!("  --signature, -g TEXT draw a hand-drawn style curve generated from TEXT on top");
 }
