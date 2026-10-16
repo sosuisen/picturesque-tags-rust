@@ -21,6 +21,14 @@ const FOREGROUND_SAMPLES: usize = 24;
 /// How many times the harmonics are redrawn when they do not give exactly one loop.
 const FOREGROUND_MAX_TRIES: usize = 16;
 
+/// Eye placement for `ForegroundStyle::Face`, as fractions of the outline's bounding box.
+/// Distance between the two eyes.
+const EYE_GAP: f32 = 0.22;
+/// Length of each eye bar.
+const EYE_LENGTH: f32 = 0.12;
+/// How far the pair of eyes moves to the right of the center.
+const EYE_RIGHT_SHIFT: f32 = 0.08;
+
 /// One sine term of the foreground outline: amplitude × sin(k × θ + phase).
 #[derive(Debug, Clone, Copy)]
 struct Harmonic {
@@ -37,6 +45,9 @@ pub enum ForegroundStyle {
     Crossing,
     /// A closed curve that never crosses itself. It can still have dents.
     NoCrossing,
+    /// The `NoCrossing` curve with two short vertical bars as eyes,
+    /// one third down from the top and slightly to the right.
+    Face,
 }
 
 /// SVG icon builder.
@@ -320,7 +331,9 @@ impl IconBuilder {
 
         let harmonics = match style {
             ForegroundStyle::Crossing => Self::draw_single_loop_harmonics(&mut rng),
-            ForegroundStyle::NoCrossing => Self::draw_no_crossing_harmonics(&mut rng),
+            ForegroundStyle::NoCrossing | ForegroundStyle::Face => {
+                Self::draw_no_crossing_harmonics(&mut rng)
+            }
         };
 
         let profile: Vec<f32> = (0..FOREGROUND_SAMPLES)
@@ -339,12 +352,7 @@ impl IconBuilder {
             .collect();
 
         // The outline is lopsided, so center its bounding box on the jittered center.
-        let (min_x, max_x, min_y, max_y) = raw.iter().fold(
-            (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
-            |(min_x, max_x, min_y, max_y), &(x, y)| {
-                (min_x.min(x), max_x.max(x), min_y.min(y), max_y.max(y))
-            },
-        );
+        let (min_x, max_x, min_y, max_y) = Self::bounding_box(&raw);
         let shift_x = cx - (min_x + max_x) / 2.0;
         let shift_y = cy - (min_y + max_y) / 2.0;
         let points: Vec<(f32, f32)> = raw.iter().map(|&(x, y)| (x + shift_x, y + shift_y)).collect();
@@ -353,7 +361,43 @@ impl IconBuilder {
         self.fg_group.push(format!(
             r##"<path d="{d}" stroke="#000000" stroke-width="5" fill="none"/>"##
         ));
+        if style == ForegroundStyle::Face {
+            self.add_eyes(&points);
+        }
         self
+    }
+
+    /// Adds two short vertical bars as eyes inside the outline.
+    ///
+    /// The eyes sit one third down from the top of the outline's bounding box,
+    /// and a little to the right of its center so the face does not look symmetric.
+    fn add_eyes(&mut self, outline: &[(f32, f32)]) {
+        let (min_x, max_x, min_y, max_y) = Self::bounding_box(outline);
+        let width = max_x - min_x;
+        let height = max_y - min_y;
+        let eye_y = min_y + height / 3.0;
+        let eyes_center_x = (min_x + max_x) / 2.0 + width * EYE_RIGHT_SHIFT;
+        let half_gap = width * EYE_GAP / 2.0;
+        let half_len = height * EYE_LENGTH / 2.0;
+        let fmt = |v: f32| ((v * 10.0).round() / 10.0).to_string();
+        for x in [eyes_center_x - half_gap, eyes_center_x + half_gap] {
+            self.fg_group.push(format!(
+                r##"<line x1="{x}" y1="{y1}" x2="{x}" y2="{y2}" stroke="#000000" stroke-width="5" stroke-linecap="round"/>"##,
+                x = fmt(x),
+                y1 = fmt(eye_y - half_len),
+                y2 = fmt(eye_y + half_len),
+            ));
+        }
+    }
+
+    /// Returns (min_x, max_x, min_y, max_y) of the points.
+    fn bounding_box(points: &[(f32, f32)]) -> (f32, f32, f32, f32) {
+        points.iter().fold(
+            (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+            |(min_x, max_x, min_y, max_y), &(x, y)| {
+                (min_x.min(x), max_x.max(x), min_y.min(y), max_y.max(y))
+            },
+        )
     }
 
     fn sample_angle(i: usize, samples: usize) -> f32 {
@@ -650,6 +694,51 @@ mod tests {
             }
             assert!(!IconBuilder::has_single_loop(&harmonics), "seed {seed}");
         }
+    }
+
+    #[test]
+    fn face_adds_two_eyes_at_one_third_height_right_of_center() {
+        let mut builder = IconBuilder::new(100, 100);
+        builder.add_foreground("sign", ForegroundStyle::Face);
+        assert_eq!(builder.fg_group.len(), 3);
+        assert!(builder.fg_group[0].starts_with("<path "));
+        let eyes: Vec<&String> = builder.fg_group[1..].iter().collect();
+        assert!(eyes.iter().all(|e| e.starts_with("<line ")));
+
+        // Same outline as NoCrossing.
+        let mut plain = IconBuilder::new(100, 100);
+        plain.add_foreground("sign", ForegroundStyle::NoCrossing);
+        assert_eq!(builder.fg_group[0], plain.fg_group[0]);
+
+        let attr = |e: &str, name: &str| -> f32 {
+            e.split(&format!("{name}=\""))
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        let d = builder.fg_group[0].split("d=\"").nth(1).unwrap().split('"').next().unwrap();
+        let coords: Vec<f32> = d.split(' ').filter_map(|t| t.parse().ok()).collect();
+        let xs: Vec<f32> = coords.iter().step_by(2).copied().collect();
+        let ys: Vec<f32> = coords.iter().skip(1).step_by(2).copied().collect();
+        let (min_x, max_x) = (xs.iter().cloned().fold(f32::MAX, f32::min), xs.iter().cloned().fold(f32::MIN, f32::max));
+        let (min_y, max_y) = (ys.iter().cloned().fold(f32::MAX, f32::min), ys.iter().cloned().fold(f32::MIN, f32::max));
+
+        // Vertical bars centered one third down from the top.
+        let expected_y = min_y + (max_y - min_y) / 3.0;
+        for e in &eyes {
+            assert_eq!(attr(e, "x1"), attr(e, "x2"));
+            let mid_y = (attr(e, "y1") + attr(e, "y2")) / 2.0;
+            assert!((mid_y - expected_y).abs() < 1.0, "{e}");
+        }
+        // The pair sits to the right of the outline center.
+        let center_x = (min_x + max_x) / 2.0;
+        let eyes_center = (attr(eyes[0], "x1") + attr(eyes[1], "x1")) / 2.0;
+        assert!(eyes_center > center_x);
+        assert!(attr(eyes[0], "x1") < attr(eyes[1], "x1"));
     }
 
     #[test]

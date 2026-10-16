@@ -31,8 +31,11 @@ const SIGNED: &[(&str, ForegroundStyle, &[&str])] = &[
     ("Alice", ForegroundStyle::NoCrossing, &["apple"]),
     ("Bob", ForegroundStyle::Crossing, &["apple"]),
     ("Bob", ForegroundStyle::NoCrossing, &["apple"]),
+    ("Alice", ForegroundStyle::Face, &["apple"]),
+    ("Bob", ForegroundStyle::Face, &["apple"]),
     ("Alice", ForegroundStyle::Crossing, &["cardbox", "card"]),
     ("Bob", ForegroundStyle::NoCrossing, &["cardbox", "card", "framework"]),
+    ("Carol", ForegroundStyle::Face, &["cardbox", "card", "framework"]),
     ("Alice", ForegroundStyle::Crossing, &[]),
 ];
 

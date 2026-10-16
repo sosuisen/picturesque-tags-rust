@@ -18,6 +18,7 @@ let svg = generate_ptag("apple", 100, 100);
 // Background plus a foreground curve generated from the signature.
 // ForegroundStyle::Crossing draws a curve that crosses itself exactly once, like a loop in a sign.
 // ForegroundStyle::NoCrossing draws a curve that never crosses itself.
+// ForegroundStyle::Face is NoCrossing plus two short vertical bars as eyes.
 let svg = generate_icon("apple", "Hidekazu", ForegroundStyle::Crossing, 128, 128);
 
 // Multiple tags: sorted, then up to four are composed in a 2x2 grid.
@@ -45,6 +46,7 @@ let svg = builder.to_svg();
 cargo run -- --size 128 apple > apple.svg
 cargo run -- --size 128x96 --signature Hidekazu apple > apple.svg
 cargo run -- --size 128 --signature Hidekazu --style no-crossing apple > apple.svg
+cargo run -- --size 128 --signature Hidekazu --style face apple > apple.svg
 # Multiple tags are sorted and up to four are composed in a 2x2 grid
 cargo run -- --size 128 --signature Hidekazu cardbox card > cardbox_card.svg
 ```

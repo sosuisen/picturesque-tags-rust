@@ -1,6 +1,6 @@
 //! Generates an SVG icon from the command line and writes it to stdout.
 //!
-//! Usage: `picturesque-tags [--size W[xH]] [--signature TEXT] [--style crossing|no-crossing] [TAG...]`
+//! Usage: `picturesque-tags [--size W[xH]] [--signature TEXT] [--style crossing|no-crossing|face] [TAG...]`
 
 use std::process::ExitCode;
 
@@ -37,8 +37,9 @@ fn main() -> ExitCode {
                 style = match value.as_str() {
                     "crossing" => ForegroundStyle::Crossing,
                     "no-crossing" => ForegroundStyle::NoCrossing,
+                    "face" => ForegroundStyle::Face,
                     _ => {
-                        eprintln!("style must be crossing or no-crossing: {value}");
+                        eprintln!("style must be crossing, no-crossing or face: {value}");
                         print_usage();
                         return ExitCode::FAILURE;
                     }
@@ -97,5 +98,5 @@ fn print_usage() {
     eprintln!("                       two or more tags are sorted and up to four are composed in a 2x2 grid");
     eprintln!("  --size, -s W[xH]     icon width and height (default: 100)");
     eprintln!("  --signature, -g TEXT draw a hand-drawn style curve generated from TEXT on top");
-    eprintln!("  --style, -t STYLE    curve style: crossing (default) or no-crossing");
+    eprintln!("  --style, -t STYLE    curve style: crossing (default), no-crossing or face");
 }
